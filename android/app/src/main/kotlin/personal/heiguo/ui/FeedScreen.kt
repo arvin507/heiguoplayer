@@ -88,6 +88,12 @@ private fun FeedPage(item: SeriesItem, ui: FeedUiState, vm: FeedViewModel, botto
             }
         }
 
+        // 顶部渐变：让状态栏的时间、电量压在封面或视频上也看得清（不拦截点击和滑动）
+        Box(
+            Modifier.align(Alignment.TopStart).fillMaxWidth().height(120.dp)
+                .background(Brush.verticalGradient(listOf(Color(0x99000000), Color.Transparent))),
+        )
+
         // 底部信息
         Column(
             Modifier.align(Alignment.BottomStart).fillMaxWidth()

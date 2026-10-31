@@ -35,7 +35,16 @@ class LiveHongguoService(profileFile: File) : HongguoService {
 
     override suspend fun suggest(prefix: String): List<SearchSuggestion> =
         run { client.suggest(prefix) }.filter { it.text.isNotEmpty() }
-            .map { SearchSuggestion(it.text, it.keyword.ifEmpty { it.text }) }
+            .map { SearchSuggestion(it.text, suggestionKeyword(it.text, it.keyword)) }
+
+    companion object {
+        /**
+         * 联想词点选后提交的搜索词。SDK 的直达行 keyword 是内容 ID（长数字串），
+         * 拿它去搜索什么也搜不到，所以这种情况改用显示文字。
+         */
+        fun suggestionKeyword(text: String, keyword: String): String =
+            if (keyword.isEmpty() || (keyword.length >= 10 && keyword.all { it.isDigit() })) text else keyword
+    }
 
     override suspend fun hotSearch(): HotSearchInfo {
         val h = run { client.hotSearch() }

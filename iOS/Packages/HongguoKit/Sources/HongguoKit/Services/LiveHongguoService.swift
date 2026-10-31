@@ -45,7 +45,7 @@ public final class LiveHongguoService: HongguoService {
     public func suggest(_ prefix: String) async throws -> [SearchSuggestion] {
         try await run { try await self.client.suggest(prefix) }
             .filter { !$0.text.isEmpty }
-            .map { SearchSuggestion(text: $0.text, keyword: $0.keyword.isEmpty ? $0.text : $0.keyword) }
+            .map { SearchSuggestion(text: $0.text, keyword: Self.suggestionKeyword(text: $0.text, keyword: $0.keyword)) }
     }
 
     public func hotSearch() async throws -> HotSearchInfo {
@@ -161,6 +161,13 @@ public final class LiveHongguoService: HongguoService {
     }
 
     // MARK: - 映射
+
+    /// 联想词点选后提交的搜索词。SDK 的直达行 keyword 是内容 ID（长数字串），
+    /// 拿它去搜索什么也搜不到，所以这种情况改用显示文字。
+    static func suggestionKeyword(text: String, keyword: String) -> String {
+        if keyword.isEmpty || (keyword.count >= 10 && keyword.allSatisfy(\.isNumber)) { return text }
+        return keyword
+    }
 
     private func run<T>(_ body: () async throws -> T) async throws -> T {
         do {

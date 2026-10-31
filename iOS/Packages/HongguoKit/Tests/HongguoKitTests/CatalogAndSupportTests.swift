@@ -105,3 +105,23 @@ final class SupportTests: XCTestCase {
         try await gate.acquire() // 没有被泄漏的占位
     }
 }
+
+
+final class SuggestionKeywordTests: XCTestCase {
+    func testDirectRowWithContentIdFallsBackToText() {
+        XCTAssertEqual(LiveHongguoService.suggestionKeyword(text: "全球死考", keyword: "7512345678901234567"), "全球死考")
+    }
+
+    func testNormalKeywordIsKept() {
+        XCTAssertEqual(LiveHongguoService.suggestionKeyword(text: "全球死考 第二季", keyword: "全球死考"), "全球死考")
+    }
+
+    func testEmptyKeywordUsesText() {
+        XCTAssertEqual(LiveHongguoService.suggestionKeyword(text: "全球死考", keyword: ""), "全球死考")
+    }
+
+    func testShortNumericKeywordIsKept() {
+        // 像“2024”这样的短数字是正常搜索词，不是内容 ID
+        XCTAssertEqual(LiveHongguoService.suggestionKeyword(text: "2024", keyword: "2024"), "2024")
+    }
+}

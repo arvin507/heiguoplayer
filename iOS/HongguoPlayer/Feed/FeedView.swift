@@ -106,6 +106,13 @@ private struct FeedPage: View {
             }
             .padding(.bottom, 150)
         }
+        // 顶部渐变：让状态栏的时间、电量压在封面或视频上也看得清（不拦截点击和滑动）
+        .overlay(alignment: .top) {
+            LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 140)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
         .clipped()
     }
 
