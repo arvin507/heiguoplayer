@@ -5,6 +5,7 @@ import HongguoKit
 /// 我的：观看历史、收藏、追更（全部存本机）。
 struct LibraryView: View {
     @State private var mode = Mode.history
+    @State private var showDisclaimer = false
     enum Mode: String, CaseIterable { case history = "历史", favorites = "收藏", follows = "追更" }
 
     var body: some View {
@@ -26,6 +27,14 @@ struct LibraryView: View {
             }
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("免责声明") { showDisclaimer = true }
+                }
+            }
+            .sheet(isPresented: $showDisclaimer) {
+                DisclaimerView(requireAccept: false) { showDisclaimer = false }
+            }
             .seriesDestinations()
         }
     }

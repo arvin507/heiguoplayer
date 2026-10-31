@@ -22,6 +22,15 @@ enum DebugLaunch {
         #endif
     }
 
+    /// 是不是带着 -debugXxx 参数启动的验收运行。
+    static var isDebugRun: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-debug") }
+        #else
+        false
+        #endif
+    }
+
     static func flag(_ key: String) -> Bool {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains("-\(key)")

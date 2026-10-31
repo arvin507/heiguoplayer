@@ -15,6 +15,8 @@ struct RootView: View {
     @Environment(FollowUpdateChecker.self) private var followChecker
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab: RootTab = .feed
+    /// 已经同意过的免责声明版本；0 表示还没同意。
+    @AppStorage("disclaimerAcceptedVersion") private var acceptedVersion = 0
     @Query(filter: #Predicate<FollowedSeries> { $0.latestEpisodeCount > $0.knownEpisodeCount })
     private var updatedFollows: [FollowedSeries]
 
@@ -39,6 +41,13 @@ struct RootView: View {
                 Text("初始化失败：\(e.userMessage)")
                     .font(.footnote).padding(8).background(.red.opacity(0.85), in: Capsule()).foregroundStyle(.white)
             }
+        }
+        // 首次启动（或声明更新后）必须先阅读免责声明。Debug 验收参数启动时跳过。
+        .fullScreenCover(isPresented: Binding(
+            get: { acceptedVersion < Disclaimer.version && !DebugLaunch.isDebugRun },
+            set: { _ in }
+        )) {
+            DisclaimerView(requireAccept: true) { acceptedVersion = Disclaimer.version }
         }
         .task { await followChecker.checkIfNeeded() }
         .onAppear {

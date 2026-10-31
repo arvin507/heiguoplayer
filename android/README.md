@@ -2,6 +2,17 @@
 
 个人学习项目，仅自用，不发布、不分发。基于非官方 [openhongguo](https://github.com/beilunyang/openhongguo) SDK（Apache-2.0，Maven Central 的 Kotlin 绑定 `io.github.beilunyang:openhongguo:0.1.0`，与 iOS 端用的 v0.1.1 源码一致）。是 `../iOS` 的 Jetpack Compose 版本，结构一一对应。
 
+## 免责声明
+
+1. 本 App是个人学习项目，仅用于学习和技术研究，**不得用于任何商业用途**。
+2. 本 App不提供、不上传、不对外分发任何视频内容。内容均来自第三方服务，版权归原权利人所有；解密后的内容只缓存在使用者自己的设备上。
+3. 本 App与红果短剧及其运营方没有任何关联，不代表其立场；相关名称和商标归其所有者所有。接口层使用的是开源的非官方 SDK，随时可能失效。
+4. 请遵守所在地的法律法规和相关服务条款。因使用本 App产生的一切后果由使用者自行承担，作者不承担任何责任。
+
+> **删除提醒**：本 App仅供学习交流，请在使用后 24 小时内删除本 App 及缓存的全部内容。如权利人认为内容侵权，请联系删除。
+
+两端 App 在首次启动时会弹出这份声明，需点“我已阅读”才能进入；之后可以在“我的”页左上角（iOS）/ 顶部（Android）的“免责声明”里随时查看。文案在 iOS 的 `HongguoPlayer/App/Disclaimer.swift` 和 Android 的 `ui/Disclaimer.kt` 里，两处保持一致；改动文案时递增 `version`，已同意过旧版本的用户会再弹一次。
+
 ## 构建
 
 需要 Android SDK（compileSdk 36）和 JDK 17+（Android Studio 自带的 JBR 即可）。

@@ -29,6 +29,12 @@ class AppEnv(
         get() = prefs?.getInt("preferredHeight", 0) ?: memoryHeight
         set(v) { memoryHeight = v; prefs?.edit()?.putInt("preferredHeight", v)?.apply() }
     private var memoryHeight = 0
+
+    /** 已经同意过的免责声明版本；0 表示还没同意。 */
+    var acceptedDisclaimerVersion: Int
+        get() = prefs?.getInt("disclaimerVersion", 0) ?: memoryDisclaimer
+        set(v) { memoryDisclaimer = v; prefs?.edit()?.putInt("disclaimerVersion", v)?.apply() }
+    private var memoryDisclaimer = 0
     var prefs: android.content.SharedPreferences? = null
 }
 

@@ -88,6 +88,15 @@ private fun AppRoot() {
         onDispose { owner.lifecycle.removeObserver(obs) }
     }
 
+    // 首次启动（或声明更新后）必须先阅读免责声明
+    var needsDisclaimer by remember { mutableStateOf(env.acceptedDisclaimerVersion < Disclaimer.VERSION) }
+    if (needsDisclaimer) {
+        DisclaimerDialog(requireAccept = true) {
+            env.acceptedDisclaimerVersion = Disclaimer.VERSION
+            needsDisclaimer = false
+        }
+    }
+
     NavHost(nav, startDestination = "main") {
         composable("main") {
             MainTabs(

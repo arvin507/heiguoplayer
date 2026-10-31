@@ -162,9 +162,13 @@ fun LibraryScreen(onOpenSeries: (String) -> Unit, onPlay: (String, Int, Double) 
     val ui by vm.ui.collectAsState()
     var tab by remember { mutableIntStateOf(0) }
     var confirmClear by remember { mutableStateOf(false) }
+    var showDisclaimer by remember { mutableStateOf(false) }
     val titles = listOf("历史", "收藏", if (ui.updatedFollowCount > 0) "追更 (${ui.updatedFollowCount})" else "追更")
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { showDisclaimer = true }) { Text("免责声明") }
+        }
         TabRow(selectedTabIndex = tab) { titles.forEachIndexed { i, t -> Tab(tab == i, { tab = i }, text = { Text(t) }) } }
         when (tab) {
             0 -> if (ui.history.isEmpty()) EmptyView("还没有观看记录") else Column {
@@ -212,6 +216,8 @@ fun LibraryScreen(onOpenSeries: (String) -> Unit, onPlay: (String, Int, Double) 
             }
         }
     }
+
+    if (showDisclaimer) DisclaimerDialog(requireAccept = false) { showDisclaimer = false }
 
     if (confirmClear) {
         AlertDialog(
