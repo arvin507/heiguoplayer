@@ -1,5 +1,8 @@
 package personal.heiguo
 
+import android.app.PictureInPictureParams
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.combine
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -30,6 +35,34 @@ class MainActivity : ComponentActivity() {
         setContent {
             HeiguoTheme { AppRoot() }
         }
+        // 有视频在播（或视频宽高比变化）时更新小窗参数；Android 12+ 回到桌面会自动进入小窗。
+        lifecycleScope.launch {
+            combine(PipState.enabled, PipState.aspect) { _, _ -> }.collect {
+                runCatching { setPictureInPictureParams(pipParams()) }
+            }
+        }
+    }
+
+    private fun pipParams(): PictureInPictureParams =
+        PictureInPictureParams.Builder().apply {
+            setAspectRatio(PipState.aspect.value)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setAutoEnterEnabled(PipState.enabled.value)
+                setSeamlessResizeEnabled(false)
+            }
+        }.build()
+
+    /** Android 12 以下没有自动进入，按 Home 键时手动进入小窗。 */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && PipState.enabled.value) {
+            runCatching { enterPictureInPictureMode(pipParams()) }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        PipState.inPip.value = isInPictureInPictureMode
     }
 }
 
@@ -84,10 +117,10 @@ private fun AppRoot() {
 @Composable
 private fun MainTabs(onOpen: (personal.heiguo.domain.SeriesItem) -> Unit, onOpenId: (String) -> Unit, onPlay: (String, Int, Double) -> Unit) {
     var tab by rememberSaveable { mutableStateOf(Tab.Feed) }
-    val bar = 80.dp
+    val inPip by PipState.inPip.collectAsState()
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            if (!inPip) NavigationBar {
                 Tab.entries.forEach { t ->
                     NavigationBarItem(selected = tab == t, onClick = { tab = t }, icon = { Icon(t.icon, t.label) }, label = { Text(t.label) })
                 }

@@ -60,6 +60,7 @@ fun rememberExoPlayer(): ExoPlayer {
 @Composable
 fun BindPlayback(controller: PlayerController, player: ExoPlayer, active: Boolean = true) {
     val state by controller.state.collectAsState()
+    KeepScreenOn(player)
 
     DisposableEffect(controller, player) {
         val listener = object : Player.Listener {
@@ -98,14 +99,33 @@ fun BindPlayback(controller: PlayerController, player: ExoPlayer, active: Boolea
     }
 }
 
+/** 播放（含缓冲）期间保持亮屏，暂停、结束或离开页面后恢复系统自动熄屏。 */
+@Composable
+fun KeepScreenOn(player: ExoPlayer) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(player, view) {
+        fun update() {
+            view.keepScreenOn = player.playWhenReady &&
+                (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING)
+        }
+        val l = object : Player.Listener {
+            override fun onEvents(p: Player, events: Player.Events) = update()
+        }
+        player.addListener(l)
+        update()
+        onDispose {
+            player.removeListener(l)
+            view.keepScreenOn = false
+        }
+    }
+}
+
 @Composable
 fun VideoSurface(player: ExoPlayer, modifier: Modifier = Modifier) {
     AndroidView(
         factory = { ctx ->
-            PlayerView(ctx).apply {
-                useController = false
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            // TextureView 版本的 PlayerView，进出小窗、窗口缩放时更不容易丢画面
+            (android.view.LayoutInflater.from(ctx).inflate(personal.heiguo.R.layout.view_player_texture, null) as PlayerView).apply {
                 this.player = player
             }
         },
@@ -256,6 +276,17 @@ private fun PlayerContent(controller: PlayerController, fullscreen: Boolean, onT
     val player = rememberExoPlayer()
     BindPlayback(controller, player)
     val state by controller.state.collectAsState()
+    PipEffect(player, active = state is PlayerState.Ready)
+    val inPip by PipState.inPip.collectAsState()
+    // 不在小窗里却退到后台（锁屏、切到别的 App）：暂停，不要留下只有声音没有画面的后台播放
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP && !PipState.inPip.value) player.pause()
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
     val index by controller.index.collectAsState()
     val episode = controller.episodes.getOrNull(index)
 
@@ -308,7 +339,7 @@ private fun PlayerContent(controller: PlayerController, fullscreen: Boolean, onT
         VideoSurface(player, Modifier.fillMaxSize())
         PlayerStatusOverlay(state, onRetry = controller::retry, modifier = Modifier.fillMaxSize())
 
-        if (showControls) {
+        if (showControls && !inPip) {
             // 顶栏
             Row(
                 Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color(0x66000000)).statusBarsPadding().padding(horizontal = 4.dp),

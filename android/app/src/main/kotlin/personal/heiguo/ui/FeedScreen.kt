@@ -35,8 +35,9 @@ fun FeedScreen(onOpenDetail: (SeriesItem) -> Unit, bottomInset: androidx.compose
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, e ->
-            if (e == Lifecycle.Event.ON_PAUSE) vm.pause()
-            if (e == Lifecycle.Event.ON_RESUME && vm.feed.state.value.items.isNotEmpty()) vm.resume()
+            // 进入小窗时 Activity 会 pause 但不会 stop，所以用 ON_STOP 判断：小窗里继续播，退出小窗或锁屏才停
+            if (e == Lifecycle.Event.ON_STOP && !PipState.inPip.value) vm.pause()
+            if (e == Lifecycle.Event.ON_START && vm.feed.state.value.items.isNotEmpty()) vm.resume()
         }
         owner.lifecycle.addObserver(obs)
         onDispose { owner.lifecycle.removeObserver(obs); vm.pause() }
@@ -60,14 +61,18 @@ fun FeedScreen(onOpenDetail: (SeriesItem) -> Unit, bottomInset: androidx.compose
 private fun FeedPage(item: SeriesItem, ui: FeedUiState, vm: FeedViewModel, bottomInset: androidx.compose.ui.unit.Dp, onOpenDetail: (SeriesItem) -> Unit) {
     val focused = ui.focusedId == item.id
     val player = if (focused) ui.player else null
-    Box(Modifier.fillMaxSize()) {
-        RemoteImage(item.coverUrl, Modifier.fillMaxSize(), ContentScale.Crop)
-        Box(Modifier.fillMaxSize().background(Color(0x66000000)))
+    val inPip by PipState.inPip.collectAsState()
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (!inPip) {
+            RemoteImage(item.coverUrl, Modifier.fillMaxSize(), ContentScale.Crop)
+            Box(Modifier.fillMaxSize().background(Color(0x66000000)))
+        }
 
         if (player != null) {
             val exo = rememberExoPlayer()
             BindPlayback(player, exo)
             val st by player.state.collectAsState()
+            PipEffect(exo, active = st is PlayerState.Ready)
             if (st is PlayerState.Ready) VideoSurface(exo, Modifier.fillMaxSize())
             PlayerStatusOverlay(st, onRetry = player::retry, modifier = Modifier.fillMaxSize())
         } else if (focused) {
@@ -88,24 +93,26 @@ private fun FeedPage(item: SeriesItem, ui: FeedUiState, vm: FeedViewModel, botto
             }
         }
 
-        // 顶部渐变：让状态栏的时间、电量压在封面或视频上也看得清（不拦截点击和滑动）
-        Box(
-            Modifier.align(Alignment.TopStart).fillMaxWidth().height(120.dp)
-                .background(Brush.verticalGradient(listOf(Color(0x99000000), Color.Transparent))),
-        )
+        if (!inPip) {
+            // 顶部渐变：让状态栏的时间、电量压在封面或视频上也看得清（不拦截点击和滑动）
+            Box(
+                Modifier.align(Alignment.TopStart).fillMaxWidth().height(120.dp)
+                    .background(Brush.verticalGradient(listOf(Color(0x99000000), Color.Transparent))),
+            )
 
-        // 底部信息
-        Column(
-            Modifier.align(Alignment.BottomStart).fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
-                .padding(start = 16.dp, end = 16.dp, top = 40.dp, bottom = 16.dp + bottomInset)
-                .clickable { onOpenDetail(item) },
-        ) {
-            Text(item.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
-            if (item.summary.isNotEmpty()) {
-                Text(item.summary, color = Color(0xFFDDDDDD), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            // 底部信息
+            Column(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
+                    .padding(start = 16.dp, end = 16.dp, top = 40.dp, bottom = 16.dp + bottomInset)
+                    .clickable { onOpenDetail(item) },
+            ) {
+                Text(item.title, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                if (item.summary.isNotEmpty()) {
+                    Text(item.summary, color = Color(0xFFDDDDDD), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("共 ${item.episodeCount} 集 · 点击查看详情", color = Color(0xFFAAAAAA), style = MaterialTheme.typography.labelSmall)
             }
-            Text("共 ${item.episodeCount} 集 · 点击查看详情", color = Color(0xFFAAAAAA), style = MaterialTheme.typography.labelSmall)
         }
     }
 }

@@ -123,7 +123,7 @@ struct PlayerSurface: View {
     var body: some View {
         ZStack {
             Color.black
-            VideoSurface(player: engine.player)
+            VideoSurface(player: engine.player, onLayer: { engine.attachPiP($0) })
                 .opacity(isReady ? 1 : 0)
             overlay
             if showsInfo {

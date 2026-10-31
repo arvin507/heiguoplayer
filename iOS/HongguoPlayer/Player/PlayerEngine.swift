@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import SwiftUI
 import UIKit
 
@@ -26,6 +27,11 @@ final class PlayerEngine {
     var onFailure: ((String, Double) -> Void)?
 
     private var loadedURL: URL?
+    @ObservationIgnored private let pip = PiPCoordinator()
+    /// 本引擎当前是否在计入“保持亮屏”的计数里。
+    @ObservationIgnored private var holdsIdleLock = false
+    /// 正在播放的引擎数。大于 0 时关闭系统自动锁屏，否则看一阵就熄屏。
+    private static var idleLocks = 0
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
@@ -47,11 +53,16 @@ final class PlayerEngine {
             Task { @MainActor in
                 self?.isBuffering = status == .waitingToPlayAtSpecifiedRate
                 self?.isPlaying = status != .paused
+                self?.updateIdleLock()
             }
         }
     }
 
+    /// 把画面层交给画中画控制器：回到桌面时系统自动弹出小窗继续播放。
+    func attachPiP(_ layer: AVPlayerLayer) { pip.attach(layer) }
+
     func load(_ url: URL, startAt: Double) {
+        try? AVAudioSession.sharedInstance().setActive(true)
         guard url != loadedURL else {
             player.play()
             return
@@ -111,8 +122,20 @@ final class PlayerEngine {
         statusObservation = nil
     }
 
+    /// 播放（含缓冲）期间保持亮屏，暂停、离开页面后恢复系统自动锁屏。
+    private func updateIdleLock() {
+        let want = isPlaying
+        guard want != holdsIdleLock else { return }
+        holdsIdleLock = want
+        Self.idleLocks += want ? 1 : -1
+        UIApplication.shared.isIdleTimerDisabled = Self.idleLocks > 0
+    }
+
     func teardown() {
+        pip.stop()
         unload()
+        isPlaying = false
+        updateIdleLock()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
@@ -121,16 +144,44 @@ final class PlayerEngine {
     }
 }
 
+/// 画中画（小窗）：回到桌面时自动进入，点小窗上的“还原”回到 App。
+/// 需要 Info.plist 的 UIBackgroundModes=audio 和 .playback 音频会话。
+final class PiPCoordinator: NSObject, AVPictureInPictureControllerDelegate {
+    private var controller: AVPictureInPictureController?
+
+    func attach(_ layer: AVPlayerLayer) {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        if controller?.playerLayer === layer { return }
+        controller = AVPictureInPictureController(playerLayer: layer)
+        controller?.delegate = self
+        controller?.canStartPictureInPictureAutomaticallyFromInline = true
+    }
+
+    func stop() {
+        if controller?.isPictureInPictureActive == true { controller?.stopPictureInPicture() }
+        controller = nil
+    }
+
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController,
+                                    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
+        // 播放界面一直在，不需要额外恢复
+        completionHandler(true)
+    }
+}
+
 /// 用 AVPlayerLayer 显示画面（不用 VideoPlayer，避免系统控件和我们的手势冲突）。
 struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
     var gravity: AVLayerVideoGravity = .resizeAspect
+    /// 画面层创建后回调，用来挂画中画。
+    var onLayer: ((AVPlayerLayer) -> Void)?
 
     func makeUIView(context: Context) -> PlayerLayerView {
         let v = PlayerLayerView()
         v.playerLayer.player = player
         v.playerLayer.videoGravity = gravity
         v.backgroundColor = .black
+        onLayer?(v.playerLayer)
         return v
     }
 

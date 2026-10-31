@@ -122,6 +122,7 @@ cd Packages/HongguoKit && swift run cenc-probe <加密.mp4> <32位hex密钥> [�
 - **封面地址有签名过期时间**：历史、收藏里存的封面过期后会显示占位图，进入详情页会刷新。
 - **追更提醒只在 App 内**：打开 App 或回到前台时（最多每 10 分钟一次）对比集数，不做后台推送。
 - **真机部署受 Xcode 版本限制**：Xcode 16.2 不支持 iOS 27 / iPhone 18,x 这一代设备（没有对应的 Developer Disk Image），需要用更新的 Xcode 构建安装。
+- **小窗没有在真机上验证**：画中画的行为（自动进入、还原、关闭）只做了编译验证，没有在 iPhone 上跑过。
 - **服务端接口随时可能改版**：SDK 对缺失字段一律取零值；`LiveHongguoService` 会过滤掉 ID 为空的条目，解析失败会显示“数据格式异常”，不会崩溃。
 
 ## Debug 启动参数
@@ -148,3 +149,15 @@ cd Packages/HongguoKit && swift run cenc-probe <加密.mp4> <32位hex密钥> [�
 | 拖动进度条 | 松手后精确跳转，并立即保存进度 |
 | 倍速 | 0.75× / 1× / 1.25× / 1.5× / 2×，变速不变调；切集后保持，下次启动仍记得 |
 | 右上角全屏按钮 | 横屏铺满；再点一次、点左上角返回，或把手机转回竖着拿都会退出。其他页面始终保持竖屏 |
+| 回到桌面 | 自动进入**小窗（画中画）**继续播放；点小窗上的“还原”回到 App，点关闭则停止 |
+| 播放中不会熄屏 | 播放（含缓冲）期间保持亮屏，暂停或离开播放页后恢复系统自动锁屏 |
+
+### 小窗与保持亮屏的实现
+
+- 小窗用系统的 `AVPictureInPictureController`（`PlayerEngine.swift` 里的 `PiPCoordinator`），打开了 `canStartPictureInPictureAutomaticallyFromInline`，回到桌面时系统自动弹出。依赖 `Info.plist` 的 `UIBackgroundModes = audio` 和 `.playback` 音频会话。
+- 保持亮屏用 `UIApplication.isIdleTimerDisabled`，按“正在播放的引擎数”计数，推荐流和播放页同时存在时也不会互相覆盖。
+- 在设备上才能验证小窗效果；模拟器对画中画的支持有限。
+
+## 搜索联想
+
+联想词点选后提交的是 SDK 的 `keyword` 字段。SDK 文档写明：**直达行的 `keyword` 是内容 ID**（一长串数字），直接拿去搜索什么也搜不到。所以 `LiveHongguoService.suggestionKeyword` 遇到 10 位以上的纯数字就改用显示文字 `text`；“2024”这类短数字仍当普通搜索词。有对应单元测试。
