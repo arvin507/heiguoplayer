@@ -39,7 +39,7 @@ public enum Redactor {
 
 /// App 的日志入口：统一经过 Redactor。
 public enum AppLog {
-    private static let logger = Logger(subsystem: "personal.HongguoPlayer", category: "net")
+    private static let logger = Logger(subsystem: "personal.heiguo.HongguoPlayer", category: "net")
 
     public static func net(_ message: String) {
         let safe = Redactor.redact(message)

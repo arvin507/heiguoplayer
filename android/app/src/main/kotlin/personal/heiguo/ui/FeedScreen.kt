@@ -78,6 +78,11 @@ private fun FeedPage(item: SeriesItem, ui: FeedUiState, vm: FeedViewModel, botto
                         Text(err.userMessage, color = Color.White)
                         if (err.isRetryable) Button(onClick = vm::retry, Modifier.padding(top = 8.dp)) { Text("重试") }
                     }
+                    ui.autoplayPaused -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("连续几部都没拿到内容密钥，已暂停自动播放", color = Color.White)
+                        Button(onClick = vm::playFocused, Modifier.padding(top = 8.dp)) { Text("播放这一部") }
+                        TextButton(onClick = vm::resumeAutoplay) { Text("恢复自动播放", color = Color.White) }
+                    }
                     ui.preparingId == item.id -> CircularProgressIndicator(color = Color.White)
                 }
             }

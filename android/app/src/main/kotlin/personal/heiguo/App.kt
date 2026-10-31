@@ -4,17 +4,22 @@ import android.app.Application
 import personal.heiguo.data.LibraryDatabase
 import personal.heiguo.data.LibraryStore
 import personal.heiguo.domain.*
+import personal.heiguo.media.ProtectedMediaStore
 import personal.heiguo.repo.CatalogRepository
 import personal.heiguo.repo.PlaybackRepository
 import personal.heiguo.service.HongguoService
 import personal.heiguo.service.LiveHongguoService
 import java.io.File
 
-/** 依赖容器：一个 Service、两个 Repository、一个本机资料库。由 Application 创建。 */
+/** 依赖容器：一个 Service、两个 Repository、一个本机资料库、一个加密分集缓存。由 Application 创建。 */
 class AppEnv(
     val service: HongguoService,
     val library: LibraryStore,
     val startupError: AppError? = null,
+    /** 加密分集的下载 → 解密 → 本地缓存。 */
+    val protectedMedia: ProtectedMediaStore = ProtectedMediaStore(
+        File(System.getProperty("java.io.tmpdir") ?: ".", "hongguo-cenc"),
+    ),
 ) {
     val catalog = CatalogRepository(service)
     val playback = PlaybackRepository(service)
@@ -27,12 +32,14 @@ class HeiguoApp : Application() {
     override fun onCreate() {
         super.onCreate()
         val library = LibraryStore(LibraryDatabase.create(this).dao())
+        // 解密后的 mp4 放 cacheDir：系统空间紧张时可以随时清掉，正好符合“缓存”的语义。
+        val media = ProtectedMediaStore(File(cacheDir, "hongguo-cenc"))
         env = try {
             // 设备档案放在 noBackupFilesDir：不参与云备份和换机迁移。
-            AppEnv(LiveHongguoService(File(noBackupFilesDir, "openhongguo/anonymous.json")), library)
+            AppEnv(LiveHongguoService(File(noBackupFilesDir, "openhongguo/anonymous.json")), library, null, media)
         } catch (t: Throwable) {
             val e = AppError.from(t) ?: AppError(AppError.Code.UNKNOWN)
-            AppEnv(FailingService(e), library, e)
+            AppEnv(FailingService(e), library, e, media)
         }
     }
 }

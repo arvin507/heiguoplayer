@@ -28,8 +28,11 @@ public final class PlayerViewModel {
     public var autoplayNext = true
 
     private let env: AppEnvironment
+    /// 播完当前集后，后台预解密后面几集；0 表示不预取（推荐流用）。
+    private let prefetchCount: Int
     private var pendingStart: Double
     private var resolveTask: Task<Void, Never>?
+    private var prefetchTask: Task<Void, Never>?
     private var streams: [StreamInfo] = []
     private var streamCursor = 0
     private var lastSaved: (number: Int, seconds: Double, at: Date)?
@@ -38,7 +41,7 @@ public final class PlayerViewModel {
     static let saveInterval: TimeInterval = 5
 
     public init(seriesId: String, seriesTitle: String, coverURL: URL?, episodes: [EpisodeItem],
-                startIndex: Int, startAt: Double, env: AppEnvironment) {
+                startIndex: Int, startAt: Double, env: AppEnvironment, prefetchCount: Int = 0) {
         self.seriesId = seriesId
         self.seriesTitle = seriesTitle
         self.coverURL = coverURL
@@ -46,6 +49,7 @@ public final class PlayerViewModel {
         self.index = min(max(0, startIndex), max(0, episodes.count - 1))
         self.pendingStart = startAt
         self.env = env
+        self.prefetchCount = max(0, prefetchCount)
     }
 
     public var current: EpisodeItem? { episodes.indices.contains(index) ? episodes[index] : nil }
@@ -61,6 +65,8 @@ public final class PlayerViewModel {
         guard episodes.indices.contains(newIndex) else { return }
         flushProgress()
         resolveTask?.cancel()
+        // 换集就重新算预取范围，旧任务停掉（已经排进 store 队列的会继续跑完）。
+        prefetchTask?.cancel()
         index = newIndex
         duration = 0
         let ep = episodes[newIndex]
@@ -88,6 +94,7 @@ public final class PlayerViewModel {
                 // 未加密：直接把远端地址交给 AVPlayer。
                 guard info.isProtected || stream.isProtected else {
                     self.state = .ready(url: stream.url, startAt: resume)
+                    self.schedulePrefetch(after: newIndex)
                     return
                 }
 
@@ -111,6 +118,7 @@ public final class PlayerViewModel {
                         self.state = .preparing(progress: 0.35 + p * 0.65)
                     case .ready(let url):
                         self.state = .ready(url: url, startAt: resume)
+                        self.schedulePrefetch(after: newIndex)
                     }
                 }
             } catch {
@@ -125,6 +133,35 @@ public final class PlayerViewModel {
                 }
                 AppLog.error(mapped, context: "playback")
                 self.state = .failed(mapped)
+            }
+        }
+    }
+
+    /// 当前集能播了之后，把后面几集也下载解密好，切集时直接走本地文件。
+    /// 只有详情页起的播放器会传 `prefetchCount > 0`；推荐流不预取，
+    /// 否则刷几屏就会把每台设备有限的播放额度耗光。
+    private func schedulePrefetch(after index: Int) {
+        guard prefetchCount > 0, index + 1 < episodes.count else { return }
+        let end = min(index + 1 + prefetchCount, episodes.count)
+        let targets = Array(episodes[(index + 1)..<end])
+        guard !targets.isEmpty else { return }
+
+        let env = self.env
+        prefetchTask = Task { @MainActor in
+            for ep in targets {
+                if Task.isCancelled { return }
+                do {
+                    let info = try await env.playback.playback(for: ep.id)
+                    if Task.isCancelled { return }
+                    guard let stream = info.preferredStream,
+                          info.isProtected || stream.isProtected,
+                          let key = info.usableKey else { continue }
+                    await env.protectedMedia.enqueue([.init(episodeId: ep.id, stream: stream, key: key)])
+                } catch {
+                    // 额度用尽 / 网络失败：后面的集大概率也一样，停止预取，不再继续消耗额度。
+                    AppLog.net("prefetch resolve \(ep.id) failed: \(error.localizedDescription)")
+                    return
+                }
             }
         }
     }

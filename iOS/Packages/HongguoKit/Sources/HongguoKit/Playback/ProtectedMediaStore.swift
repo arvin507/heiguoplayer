@@ -30,11 +30,29 @@ public actor ProtectedMediaStore {
         }
     }
 
+    /// 预解密任务：一集的播放模型（加密流）与密钥。
+    public struct Job: Sendable, Hashable {
+        public var episodeId: String
+        public var stream: StreamInfo
+        public var key: Data
+
+        public init(episodeId: String, stream: StreamInfo, key: Data) {
+            self.episodeId = episodeId
+            self.stream = stream
+            self.key = key
+        }
+    }
+
     /// 单个文件的大小上限，防止异常响应把内存打满。
     static let sizeLimit = 400 * 1024 * 1024
 
     public nonisolated let root: URL
     private let session: URLSession
+    /// 后台预解密队列，串行执行，避免几集同时抢带宽。
+    private var queue: [Job] = []
+    private var pump: Task<Void, Never>?
+    /// 同一集正在准备中的任务，播放与预解密撞上时合并，不会重复下载。
+    private var inFlight: [String: Task<URL, Error>] = [:]
 
     public init(root: URL? = nil, session: URLSession = .shared) {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
@@ -65,7 +83,7 @@ public actor ProtectedMediaStore {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let url = try await self.produce(episodeId: episodeId, stream: stream, key: key) { stage in
+                    let url = try await self.produceShared(episodeId: episodeId, stream: stream, key: key) { stage in
                         continuation.yield(stage)
                     }
                     continuation.yield(.ready(url))
@@ -76,6 +94,78 @@ public actor ProtectedMediaStore {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    // MARK: - 后台预解密
+
+    /// 把几集排进后台队列。已经在缓存里、或正在准备中的会跳过。
+    /// 队列串行执行：当前正在播的那集准备完再开始，不会抢带宽。
+    public func enqueue(_ jobs: [Job]) {
+        for job in jobs {
+            if isCached(episodeId: job.episodeId, height: job.stream.height) { continue }
+            if queue.contains(where: { $0.episodeId == job.episodeId }) { continue }
+            if inFlight[token(episodeId: job.episodeId, height: job.stream.height)] != nil { continue }
+            queue.append(job)
+        }
+        // 用户狂切集时不让队列无限增长，只保留最近的几集。
+        if queue.count > 4 { queue.removeFirst(queue.count - 4) }
+        startPumpIfNeeded()
+    }
+
+    /// 某一集是否已经有解密后的文件（任意清晰度）。
+    public func isCached(episodeId: String) -> Bool {
+        let prefix = episodeId.replacingOccurrences(of: "/", with: "_") + "-"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return false }
+        return names.contains { $0.hasPrefix(prefix) && $0.hasSuffix(".mp4") }
+    }
+
+    public var queuedCount: Int { queue.count }
+
+    /// 放弃还没开始的预解密（已经开始的会跑完）。
+    public func cancelPrefetch() {
+        queue.removeAll()
+        pump?.cancel()
+        pump = nil
+    }
+
+    private func startPumpIfNeeded() {
+        guard pump == nil, !queue.isEmpty else { return }
+        pump = Task(priority: .utility) {
+            while !Task.isCancelled, !self.queue.isEmpty {
+                let job = self.queue.removeFirst()
+                if self.isCached(episodeId: job.episodeId, height: job.stream.height) { continue }
+                do {
+                    _ = try await self.produceShared(episodeId: job.episodeId, stream: job.stream,
+                                                     key: job.key) { _ in }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    // 预解密失败不影响正在看的内容，继续下一集（额度用尽时下一集大概率也失败，
+                    // 由调用方决定是否继续入队）。
+                    AppLog.net("prefetch \(job.episodeId) failed: \(error.localizedDescription)")
+                }
+            }
+            self.pump = nil
+        }
+    }
+
+    private nonisolated func token(episodeId: String, height: Int) -> String {
+        "\(episodeId)#\(height)"
+    }
+
+    /// 同一集的准备任务只跑一次：播放时撞上预解密不会重复下载。
+    private func produceShared(episodeId: String, stream: StreamInfo, key: Data,
+                               emit: @escaping @Sendable (Stage) -> Void) async throws -> URL {
+        let token = token(episodeId: episodeId, height: stream.height)
+        if let running = inFlight[token] {
+            let url = try await running.value
+            emit(.decrypting(1))
+            return url
+        }
+        let task = Task { try await self.produce(episodeId: episodeId, stream: stream, key: key, emit: emit) }
+        inFlight[token] = task
+        defer { inFlight[token] = nil }
+        return try await task.value
     }
 
     private func produce(episodeId: String, stream: StreamInfo, key: Data,

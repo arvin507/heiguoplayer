@@ -7,7 +7,7 @@
 - 这是个人学习项目，**只在我自己的设备上运行**，不上架 App Store、不分发、不做任何商业用途。
 - 工程里没有任何分发或上架相关的配置，只有 Xcode 自动签名（免费 Apple ID 的 Personal Team，安装包 7 天过期）。
 - 通过本 App 看到的短剧、图片、文字等内容，版权归原权利人所有。
-- 本 App **只播放 SDK 返回的未加密流地址**，不解密加密分集，加密分集只显示占位提示。
+- 加密分集由 App 在本地解密后播放：用 SDK 下发的 16 字节内容密钥，对 CENC（AES-128-CTR）加密的 MP4 逐样本解密，结果只写进本机缓存（`Caches/hongguo-cenc`），不转码、不对外分发。
 
 ## SDK 来源与许可
 
@@ -48,7 +48,7 @@ cd Packages/HongguoKit && swift test
 
 如果 `xcode-select` 指向的是 Command Line Tools，在命令前加 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`。
 
-真机：在 Xcode → Settings → Accounts 登录 Apple ID，在 target 的 Signing 里选 Personal Team，连上手机直接 Run。Bundle ID 默认是 `personal.$(USER).HongguoPlayer`，冲突时自己改一下。
+真机：在 Xcode → Settings → Accounts 登录 Apple ID，在 target 的 Signing 里选 Personal Team，连上手机直接 Run。Bundle ID 是 `personal.heiguo.HongguoPlayer`，冲突时自己改一下。
 
 ## 图标
 
@@ -80,9 +80,9 @@ Views (App target, SwiftUI)
 
 | 规则 | 实现 |
 |---|---|
-| 只在真正要播放时请求播放模型 | `PlaybackRepository` 没有预取接口；推荐流要停留 0.6 秒才请求；自动连播在当前集播完后才请求下一集 |
+| 只在真正要播放时请求播放模型 | 推荐流要停留 0.6 秒才请求；自动连播在当前集播完后才请求下一集；详情页起的播放器会预取后面 2 集（见「加密分集」） |
 | 预取只限元数据 | `CatalogRepository.prefetchMetadata` 只拉详情和分集 |
-| 串行、同一集合并、结果缓存 | `AsyncGate` 串行；`TaskCoalescer` 合并同一集的并发请求；加密分集的结果永久缓存，未加密的缓存到流地址过期前 30 秒 |
+| 串行、同一集合并、结果缓存 | `AsyncGate` 串行；`TaskCoalescer` 合并同一集的并发请求；结果缓存到流地址过期前 30 秒（加密分集的地址同样会过期） |
 | 取消 | 排队中的请求页面一离开就取消，不发网络请求；已经发出的请求让它跑完并缓存结果（额度已经消耗了） |
 | `ANONYMOUS_LIMITED`（只在播放接口上） | `resetDevice()` 后重试，最多 2 次；仍失败就提示“播放次数已用完” |
 | `ANONYMOUS_LIMITED`（列表接口） | 当作空结果 |
@@ -91,14 +91,33 @@ Views (App target, SwiftUI)
 | `TRANSPORT` | 不自动重试，界面给“重试”按钮 |
 | `CONTENT_UNAVAILABLE` | 提示“内容已下架或无权访问” |
 | 所有错误 | `AppError.userMessage` 是中文提示；`code` 保留原始错误码，Debug 构建会显示在界面上 |
-| 加密分集 | 播放时识别，存进 SwiftData；网格里显示锁标记，以后不再请求。同一部剧的其他集默认不自动请求，要点“仍要尝试”；推荐流连续 3 部加密后暂停自动播放 |
+| 加密分集 | 拿到内容密钥就下载并解密成本地文件后播放，播放页显示准备进度；拿不到密钥时显示占位（`keyUnavailable`）。网格里显示锁标记。推荐流连续 3 次拿不到密钥后暂停自动播放 |
 
 设备档案存在 `Application Support/openhongguo/anonymous.json`，目录标记为不参与备份（SDK 默认行为，`LiveHongguoService` 自定义路径时也会这样标记）。日志统一经过 `Redactor`，URL 的查询参数值全部替换成 `***`，不输出带设备 ID 的完整 URL。
 
+## 加密分集
+
+服务端给的加密流是 progressive MP4 + `cenc-aes-ctr`（不是 HLS/DASH），SDK 会同时下发 16 字节内容密钥。播放流程：
+
+1. `CENCDecryptor` 解析 `moov/trak/stbl` 的 `stsz` / `stco` / `stsc` / `senc` / `saiz` / `tenc`，按每个样本自己的 IV 做 AES-128-CTR 解密；
+2. 把 `encv` / `enca` 的 sample entry 还原成 `frma` 里记录的原始格式（`hvc1` / `mp4a`），并把 `sinf`、`senc`、`saiz`、`saio`、`sgpd`、`sbgp` 的类型名等长改成 `free`；
+3. 两步都是等长操作，chunk 偏移和 moov 大小都不用重算，不会引入音画不同步；
+4. 结果写进 `Caches/hongguo-cenc/<episodeId>-<高度>.mp4`，交给 AVPlayer 播本地文件（seek 由系统直接做）。
+
+首次播放一集要先把整集下载完（360p 的 123 秒约 3.3MB），播放页显示“正在准备加密分集…”和百分比。
+
+详情页起的播放器会在当前集开播后，把**后面两集**预解密（`PlayerViewModel(prefetchCount: 2)`）。预取深度直接等于退出时白花的额度，所以只放在详情页。推荐流完全不预取，否则刷几屏就会把额度耗光。
+
+`Sources/cenc-probe` 是配套的诊断工具，可以拿单个加密文件和密钥在 macOS 上核对解密结果：
+
+```sh
+cd Packages/HongguoKit && swift run cenc-probe <加密.mp4> <32位hex密钥> [输出.mp4]
+```
+
 ## 已知限制
 
-- **几乎所有内容都是加密的。** 2026-10-31 实测抽查了 11 部剧（推荐流、热搜、漫剧榜、AI 剧榜、系列剧榜、电影、上新），第 1 集**全部**是 `cenc-aes-ctr` 加密流。本 App 按约定不解密，所以目前基本找不到能播放的分集。未加密流的播放、断点续播、自动连播逻辑有单元测试覆盖，但**没能用真实的未加密内容做端到端验证**。
-- **探测是否加密要消耗一次播放额度**：分集列表里没有“是否加密”字段，只有请求过播放模型才知道。
+- **几乎所有内容都是加密的。** 2026-10-31 实测：推荐流、热搜、漫剧榜、AI 剧榜、系列剧榜、电影、上新，第 1 集**全部**是 `cenc-aes-ctr` 加密流。App 已实现本地解密：真实 123 秒样本解密后 `ffmpeg -v error` 全程解码 0 错误，`ffprobe` 识别为 hevc + aac。
+- **探测是否加密要消耗一次播放额度**：分集列表里没有“是否加密”字段，只有请求过播放模型才知道。所以预取只放在详情页、只预取 2 集，失败就停。
 - **分享链接解析是启发式的**：SDK 没有这个功能。优先取 URL 里的 `series_id` / `book_id` 等参数，其次取 15～20 位的数字串；格式变了可能识别不出来。
 - **封面地址有签名过期时间**：历史、收藏里存的封面过期后会显示占位图，进入详情页会刷新。
 - **追更提醒只在 App 内**：打开 App 或回到前台时（最多每 10 分钟一次）对比集数，不做后台推送。

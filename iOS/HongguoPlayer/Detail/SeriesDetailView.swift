@@ -30,7 +30,8 @@ struct SeriesDetailView: View {
         .fullScreenCover(item: $playerRequest, onDismiss: { vm?.refreshLocal() }) { req in
             if let vm, let s = vm.series {
                 PlayerScreen(vm: PlayerViewModel(seriesId: s.id, seriesTitle: s.title, coverURL: s.coverURL,
-                                                 episodes: vm.episodes, startIndex: req.index, startAt: req.startAt, env: env))
+                                                 episodes: vm.episodes, startIndex: req.index, startAt: req.startAt,
+                                                 env: env, prefetchCount: 2))
             }
         }
     }
@@ -103,7 +104,7 @@ struct SeriesDetailView: View {
     }
 
     @ViewBuilder private func episodesSection(_ vm: SeriesDetailViewModel) -> some View {
-        HStack {
+        HStack(spacing: 10) {
             Text("选集").font(.headline)
             Spacer()
             if !vm.episodes.isEmpty { Text("共 \(vm.episodes.count) 集").font(.caption).foregroundStyle(.secondary) }

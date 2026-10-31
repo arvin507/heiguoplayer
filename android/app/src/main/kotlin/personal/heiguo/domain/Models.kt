@@ -54,6 +54,32 @@ data class StreamInfo(
     val encryption: String = "",
 )
 
+/**
+ * 服务端下发的内容密钥。加密分集靠它把 CENC 的样本解成明文。
+ *
+ * @param hex 32 位十六进制字符串，大小写不敏感。
+ * @param version 密钥版本，服务端原样给，只用于日志。
+ */
+data class ContentKey(val hex: String, val version: String = "") {
+    /** 解析成 16 字节；格式不对为 null（这种情况按“没有密钥”处理）。 */
+    val keyBytes: ByteArray? get() = hexToBytes(hex)
+
+    /** 日志里不要打完整密钥。 */
+    fun masked(): String = if (hex.length <= 6) "***" else "${hex.take(4)}…${hex.takeLast(2)}"
+
+    private fun hexToBytes(s: String): ByteArray? {
+        if (s.length != 32) return null
+        val out = ByteArray(16)
+        for (i in 0 until 16) {
+            val hi = Character.digit(s[i * 2], 16)
+            val lo = Character.digit(s[i * 2 + 1], 16)
+            if (hi < 0 || lo < 0) return null
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
+}
+
 data class PlaybackInfo(
     val episodeId: String,
     val isProtected: Boolean,
@@ -62,10 +88,15 @@ data class PlaybackInfo(
     val durationSeconds: Int = 0,
     /** 流地址失效时间（毫秒时间戳）；null 表示服务端没给。 */
     val expiresAtMs: Long? = null,
+    /** 加密分集的内容密钥；服务端没给（或格式不对）时为 null。 */
+    val contentKey: ContentKey? = null,
 ) {
     /** 首选流：1080p 以下里最高的一档。 */
     val preferredStream: StreamInfo?
         get() = streams.firstOrNull { it.height in 1..1080 } ?: streams.firstOrNull()
+
+    /** 可用的 16 字节密钥。 */
+    val usableKey: ByteArray? get() = contentKey?.keyBytes
 }
 
 data class SearchSuggestion(val text: String, val keyword: String)

@@ -114,12 +114,34 @@ fun VideoSurface(player: ExoPlayer, modifier: Modifier = Modifier) {
     )
 }
 
-/** 播放状态占位：解析中 / 不可播 / 失败。Ready 时不显示。 */
+/** 播放状态占位：解析中 / 解密中 / 无密钥 / 不可播 / 失败。Ready 时不显示。 */
 @Composable
 fun PlayerStatusOverlay(state: PlayerState, onRetry: () -> Unit, modifier: Modifier = Modifier) {
     Box(modifier, contentAlignment = Alignment.Center) {
         when (state) {
             PlayerState.Idle, PlayerState.Resolving -> CircularProgressIndicator(color = Color.White)
+            is PlayerState.Preparing -> {
+                val progress = state.progress
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // 进度为 0 表示还没连上 CDN / 总长度未知，用不确定进度条。
+                    if (progress > 0.01f) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            color = Color.White,
+                            trackColor = Color(0x33FFFFFF),
+                            modifier = Modifier.width(200.dp),
+                        )
+                    } else {
+                        CircularProgressIndicator(color = Color.White)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        if (progress > 0.01f) "正在解密本集… ${(progress * 100).toInt()}%" else "正在准备加密分集…",
+                        color = Color.White, style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+            PlayerState.KeyUnavailable -> Notice(Icons.Default.Lock, "无法播放加密分集", "服务端没有下发这一集的内容密钥。\n可以上下滑动切换到其他集。")
             PlayerState.Unplayable -> Notice(Icons.Default.Close, "这一集暂不可播放", "服务端禁止播放该集。")
             is PlayerState.Failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Notice(Icons.Default.Warning, state.error.userMessage, state.error.code.raw)
@@ -167,7 +189,9 @@ class PlayerHostViewModel(
                 val eps = env.catalog.episodes(seriesId)
                 if (eps.isEmpty()) { _ui.value = PlayerHostState(LoadState.Empty); return@launch }
                 val idx = eps.indexOfFirst { it.number == startNumber }.coerceAtLeast(0)
-                val c = PlayerController(seriesId, series?.title ?: "", series?.coverUrl, eps, idx, startAt, env, viewModelScope)
+                // 详情页进来的播放：提前把后面两集解密好，切集不用等下载。
+                val c = PlayerController(seriesId, series?.title ?: "", series?.coverUrl, eps, idx, startAt, env,
+                    viewModelScope, prefetchCount = 2)
                 _ui.value = PlayerHostState(LoadState.Loaded, c, series?.title ?: "")
                 c.start()
             } catch (t: Throwable) {

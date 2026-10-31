@@ -83,6 +83,32 @@ final class ViewModelTests: XCTestCase {
         XCTAssertEqual(mock.playbackCallCount, 1)
     }
 
+    func testPrefetchResolvesFollowingEpisodes() async {
+        let mock = MockHongguoService()
+        let e = env(mock)
+        let eps = [ep("s", 1), ep("s", 2), ep("s", 3), ep("s", 4)]
+        let vm = PlayerViewModel(seriesId: "s", seriesTitle: "S", coverURL: nil, episodes: eps,
+                                 startIndex: 0, startAt: 0, env: e, prefetchCount: 2)
+        vm.start()
+        await waitState(vm) { if case .ready = $0 { true } else { false } }
+        for _ in 0..<200 where mock.playbackCallCount < 3 {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(mock.playbackCallCount, 3, "应提前请求后面两集的播放模型，第 4 集不在预取范围")
+    }
+
+    func testPrefetchDisabledByDefault() async {
+        let mock = MockHongguoService()
+        let e = env(mock)
+        let vm = PlayerViewModel(seriesId: "s", seriesTitle: "S", coverURL: nil,
+                                 episodes: [ep("s", 1), ep("s", 2), ep("s", 3)],
+                                 startIndex: 0, startAt: 0, env: e)
+        vm.start()
+        await waitState(vm) { if case .ready = $0 { true } else { false } }
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertEqual(mock.playbackCallCount, 1, "推荐流不预取，避免刷屏消耗额度")
+    }
+
     func testResumeFromSavedProgress() async {
         let mock = MockHongguoService()
         let e = env(mock)

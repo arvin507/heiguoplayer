@@ -106,7 +106,7 @@ class LiveHongguoService(profileFile: File) : HongguoService {
     override suspend fun resolvePlayback(episodeId: String): PlaybackInfo {
         val r = run { client.resolvePlayback(episodeId) }
         val pb = r.playback
-        // 只丢掉 DASH 分片（ExoPlayer 这里按单文件 / HLS 播放）。
+        // 只丢掉 DASH 分片（ExoPlayer 这里按单文件 / HLS 播放）。加密标记保留，由上层决定怎么处理。
         val streams = pb.streams.filter { !it.dash }.mapNotNull { s ->
             if (!s.url.startsWith("http")) null
             else StreamInfo(s.url, s.backupUrl.ifEmpty { null }, s.definition, s.height, s.bitrate,
@@ -118,6 +118,9 @@ class LiveHongguoService(profileFile: File) : HongguoService {
             streams = streams,
             durationSeconds = pb.durationSeconds,
             expiresAtMs = if (pb.expiresAt > 0) pb.expiresAt * 1000 else null,
+            // 加密分集的内容密钥。SDK 单独请求这一项，失败时只体现在 contentKeyError 上，
+            // 流地址仍然可用，所以这里不抛错：没有密钥就走“无法播放加密分集”的占位。
+            contentKey = r.contentKey?.let { personal.heiguo.domain.ContentKey(it.key, it.version) },
         )
     }
 

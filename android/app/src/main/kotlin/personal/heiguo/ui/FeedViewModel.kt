@@ -17,6 +17,7 @@ data class FeedUiState(
     val player: PlayerController? = null,
     val preparingId: String? = null,
     val prepareError: AppError? = null,
+    val autoplayPaused: Boolean = false,
 )
 
 /**
@@ -45,6 +46,9 @@ class FeedViewModel(private val env: AppEnv) : ViewModel() {
     var dwellMs = 600L
     private var dwellJob: Job? = null
     private var restoredId: String? = null
+    /** 连续几次没拿到内容密钥；达到阈值后暂停自动播放，改为点击播放。 */
+    private var consecutiveKeyMissing = 0
+    private var observeJob: Job? = null
 
     fun load() {
         viewModelScope.launch {
@@ -66,6 +70,7 @@ class FeedViewModel(private val env: AppEnv) : ViewModel() {
         val item = items.getOrNull(index)
         if (item?.id == _ui.value.focusedId && _ui.value.player != null) return
         dwellJob?.cancel()
+        observeJob?.cancel()
         _ui.value.player?.stop()
         _ui.update { it.copy(focusedId = item?.id, player = null, prepareError = null, preparingId = null) }
         if (item == null) return
@@ -75,6 +80,8 @@ class FeedViewModel(private val env: AppEnv) : ViewModel() {
         // 元数据预取：当前和后两部
         items.subList(index, minOf(index + 3, items.size)).forEach { env.catalog.prefetchMetadata(it.id) }
 
+        // 自动播放已暂停（连续几部都没拿到内容密钥）：不请求，等用户点击。
+        if (_ui.value.autoplayPaused) return
         dwellJob = viewModelScope.launch {
             delay(dwellMs)
             if (_ui.value.focusedId == item.id) preparePlayer(item)
@@ -101,12 +108,38 @@ class FeedViewModel(private val env: AppEnv) : ViewModel() {
             val p = PlayerController(item.id, item.title, item.coverUrl, eps, startIndex, startAt, env, viewModelScope)
             _ui.update { it.copy(player = p) }
             p.start()
+            observeJob?.cancel()
+            observeJob = viewModelScope.launch { p.state.collect { noteResult(it) } }
         } catch (t: Throwable) {
             if (_ui.value.focusedId != item.id) return
             AppError.from(t)?.let { e -> _ui.update { it.copy(prepareError = e) } }
         } finally {
             _ui.update { if (it.preparingId == item.id) it.copy(preparingId = null) else it }
         }
+    }
+
+    private fun noteResult(s: PlayerState) {
+        when (s) {
+            PlayerState.KeyUnavailable -> {
+                consecutiveKeyMissing++
+                if (consecutiveKeyMissing >= KEY_MISSING_STREAK_LIMIT) _ui.update { it.copy(autoplayPaused = true) }
+            }
+            is PlayerState.Ready -> { consecutiveKeyMissing = 0; _ui.update { it.copy(autoplayPaused = false) } }
+            else -> {}
+        }
+    }
+
+    /** 用户点击“播放”（自动播放暂停时）。 */
+    fun playFocused() {
+        val id = _ui.value.focusedId ?: return
+        val item = feed.state.value.items.firstOrNull { it.id == id } ?: return
+        viewModelScope.launch { preparePlayer(item) }
+    }
+
+    fun resumeAutoplay() {
+        consecutiveKeyMissing = 0
+        _ui.update { it.copy(autoplayPaused = false) }
+        retry()
     }
 
     fun retry() {
@@ -122,4 +155,8 @@ class FeedViewModel(private val env: AppEnv) : ViewModel() {
     }
 
     fun resume() = retry()
+
+    companion object {
+        const val KEY_MISSING_STREAK_LIMIT = 3
+    }
 }
