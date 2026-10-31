@@ -252,7 +252,7 @@ struct PlayerSurface: View {
                 Text("第 \(ep.number) 集 / 共 \(vm.episodes.count) 集").font(.subheadline).foregroundStyle(.white.opacity(0.8))
             }
             if isReady, engine.duration > 0 {
-                PlaybackControls(engine: engine)
+                PlaybackControls(engine: engine, vm: vm)
             }
         }
         .foregroundStyle(.white)
@@ -309,6 +309,7 @@ struct EpisodePicker: View {
 /// 可拖动的进度条 + 时间 + 倍速。拖动时只更新预览，松手才跳转。
 struct PlaybackControls: View {
     let engine: PlayerEngine
+    let vm: PlayerViewModel
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
 
@@ -355,6 +356,25 @@ struct PlaybackControls: View {
                     .background(.white.opacity(0.18), in: Capsule())
             }
             .accessibilityLabel("播放倍速")
+
+            // 清晰度：只有一档时不显示。切换不再请求播放模型，从当前位置接着播。
+            if vm.qualityOptions.count > 1 {
+                Menu {
+                    ForEach(vm.qualityOptions) { o in
+                        Button {
+                            vm.setQuality(o.height)
+                        } label: {
+                            if o.height == vm.selectedHeight { Label(o.label, systemImage: "checkmark") } else { Text(o.label) }
+                        }
+                    }
+                } label: {
+                    Text(vm.qualityOptions.first { $0.height == vm.selectedHeight }?.label ?? "清晰度")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.white.opacity(0.18), in: Capsule())
+                }
+                .accessibilityLabel("清晰度")
+            }
         }
     }
 

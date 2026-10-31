@@ -23,6 +23,13 @@ class AppEnv(
 ) {
     val catalog = CatalogRepository(service)
     val playback = PlaybackRepository(service)
+
+    /** 用户选的清晰度（高度，0 表示没选过，用默认规则）。记在本机，下次启动仍然有效。 */
+    var preferredHeight: Int
+        get() = prefs?.getInt("preferredHeight", 0) ?: memoryHeight
+        set(v) { memoryHeight = v; prefs?.edit()?.putInt("preferredHeight", v)?.apply() }
+    private var memoryHeight = 0
+    var prefs: android.content.SharedPreferences? = null
 }
 
 class HeiguoApp : Application() {
@@ -34,6 +41,7 @@ class HeiguoApp : Application() {
         val library = LibraryStore(LibraryDatabase.create(this).dao())
         // 解密后的 mp4 放 cacheDir：系统空间紧张时可以随时清掉，正好符合“缓存”的语义。
         val media = ProtectedMediaStore(File(cacheDir, "hongguo-cenc"))
+        val prefs = getSharedPreferences("player", MODE_PRIVATE)
         env = try {
             // 设备档案放在 noBackupFilesDir：不参与云备份和换机迁移。
             AppEnv(LiveHongguoService(File(noBackupFilesDir, "openhongguo/anonymous.json")), library, null, media)
@@ -41,6 +49,7 @@ class HeiguoApp : Application() {
             val e = AppError.from(t) ?: AppError(AppError.Code.UNKNOWN)
             AppEnv(FailingService(e), library, e, media)
         }
+        env.prefs = prefs
     }
 }
 

@@ -298,6 +298,8 @@ private fun PlayerContent(controller: PlayerController, fullscreen: Boolean, onT
     var dragValue by remember { mutableFloatStateOf(0f) }
     var speed by remember { mutableFloatStateOf(1f) }
     var speedMenu by remember { mutableStateOf(false) }
+    var qualityMenu by remember { mutableStateOf(false) }
+    val quality by controller.quality.collectAsState()
     var pickEpisode by remember { mutableStateOf(false) }
 
     DisposableEffect(player) {
@@ -364,14 +366,15 @@ private fun PlayerContent(controller: PlayerController, fullscreen: Boolean, onT
                     )
                     Text(formatTime(duration / 1000.0), color = Color.White, style = MaterialTheme.typography.labelSmall)
                 }
+                val pad = PaddingValues(horizontal = 6.dp)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = controller::previous, enabled = controller.hasPrevious) { Text("上一集", color = Color.White) }
+                    TextButton(onClick = controller::previous, enabled = controller.hasPrevious, contentPadding = pad) { Text("上集", color = Color.White) }
                     TextButton(onClick = { if (isPlaying) player.pause() else player.play() }) {
                         if (isPlaying) Text("暂停", color = Color.White) else Icon(Icons.Default.PlayArrow, "播放", tint = Color.White, modifier = Modifier.size(32.dp))
                     }
-                    TextButton(onClick = controller::next, enabled = controller.hasNext) { Text("下一集", color = Color.White) }
+                    TextButton(onClick = controller::next, enabled = controller.hasNext, contentPadding = pad) { Text("下集", color = Color.White) }
                     Box {
-                        TextButton(onClick = { speedMenu = true }) { Text(if (speed == 1f) "倍速" else "${speed}x", color = Color.White) }
+                        TextButton(onClick = { speedMenu = true }, contentPadding = pad) { Text(if (speed == 1f) "倍速" else "${speed}x", color = Color.White) }
                         DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
                             SPEEDS.forEach { s ->
                                 DropdownMenuItem(
@@ -381,9 +384,25 @@ private fun PlayerContent(controller: PlayerController, fullscreen: Boolean, onT
                             }
                         }
                     }
-                    TextButton(onClick = { pickEpisode = true }) { Text("选集", color = Color.White) }
-                    TextButton(onClick = onToggleFullscreen) {
-                        Text(if (fullscreen) "退出全屏" else "全屏", color = Color.White)
+                    // 清晰度：只有一档时不显示
+                    if (quality.options.size > 1) {
+                        Box {
+                            TextButton(onClick = { qualityMenu = true }, contentPadding = pad) {
+                                Text(quality.options.firstOrNull { it.height == quality.selectedHeight }?.label ?: "清晰度", color = Color.White)
+                            }
+                            DropdownMenu(expanded = qualityMenu, onDismissRequest = { qualityMenu = false }) {
+                                quality.options.forEach { o ->
+                                    DropdownMenuItem(
+                                        text = { Text(o.label + if (o.height == quality.selectedHeight) "  ✓" else "") },
+                                        onClick = { controller.setQuality(o.height); qualityMenu = false },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    TextButton(onClick = { pickEpisode = true }, contentPadding = pad) { Text("选集", color = Color.White) }
+                    TextButton(onClick = onToggleFullscreen, contentPadding = pad) {
+                        Text(if (fullscreen) "退出" else "全屏", color = Color.White)
                     }
                 }
             }

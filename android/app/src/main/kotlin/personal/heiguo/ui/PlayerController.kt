@@ -13,6 +13,8 @@ import personal.heiguo.media.ProtectedMediaStore
 import personal.heiguo.support.AppLog
 import java.io.File
 
+data class QualityState(val options: List<QualityOption> = emptyList(), val selectedHeight: Int = 0)
+
 sealed interface PlayerState {
     data object Idle : PlayerState
     data object Resolving : PlayerState
@@ -49,6 +51,11 @@ class PlayerController(
     val index: StateFlow<Int> = _index
     var autoplayNext = true
 
+    private val _quality = MutableStateFlow(QualityState())
+    /** 可选清晰度和当前选中的一档，界面据此显示菜单。 */
+    val quality: StateFlow<QualityState> = _quality
+    private var info: PlaybackInfo? = null
+
     private var resolveJob: Job? = null
     private var prefetchJob: Job? = null
     private var streams: List<StreamInfo> = emptyList()
@@ -79,36 +86,70 @@ class PlayerController(
                 val resume = if (startAt != null && startAt >= 0) startAt else resumeSeconds(ep)
                 val info = env.playback.playback(ep.id)
                 if (current?.id != ep.id) return@launch
-                streams = info.streams
-                val stream = info.preferredStream
-                if (stream == null) {
-                    _state.value = PlayerState.Failed(AppError(AppError.Code.NO_PLAYABLE_STREAM)); return@launch
-                }
-                duration = info.durationSeconds.toDouble()
-
-                if (info.isProtected || stream.isProtected) {
-                    // 加密分集：记一下，分集网格会标个锁；然后下载 + 解密到本地再播。
-                    env.library.markEncrypted(ep.id, seriesId)
-                    val key = info.usableKey
-                    if (key == null) {
-                        _state.value = PlayerState.KeyUnavailable; return@launch
-                    }
-                    _state.value = PlayerState.Preparing(0f)
-                    val file = env.protectedMedia.prepare(ep.id, stream, key) { stage ->
-                        if (current?.id == ep.id) _state.value = PlayerState.Preparing(progressOf(stage))
-                    }
-                    if (current?.id != ep.id) return@launch
-                    _state.value = PlayerState.Ready(localUri(file), resume, nonce++)
-                    schedulePrefetch(newIndex)
-                    return@launch
-                }
-
-                _state.value = PlayerState.Ready(stream.url, resume, nonce++)
-                schedulePrefetch(newIndex)
+                startWith(ep, newIndex, info, env.preferredHeight, resume)
             } catch (t: Throwable) {
                 if (current?.id != ep.id) return@launch
                 val e = mapError(t) ?: return@launch // 取消：不要覆盖界面状态
                 AppLog.error(e, "playback")
+                _state.value = PlayerState.Failed(e)
+            }
+        }
+    }
+
+
+    /** 拿到播放模型之后：按清晰度选流，未加密直接播，加密的下载 + 解密到本地再播。 */
+    private suspend fun startWith(ep: EpisodeItem, newIndex: Int, info: PlaybackInfo, preferredHeight: Int, resume: Double) {
+        this.info = info
+        streams = info.streams
+        val stream = Quality.pick(info, preferredHeight)
+        if (stream == null) {
+            _state.value = PlayerState.Failed(AppError(AppError.Code.NO_PLAYABLE_STREAM)); return
+        }
+        _quality.value = QualityState(Quality.options(info.streams), stream.height)
+        duration = info.durationSeconds.toDouble()
+
+        if (info.isProtected || stream.isProtected) {
+            // 加密分集：记一下，分集网格会标个锁；然后下载 + 解密到本地再播。
+            env.library.markEncrypted(ep.id, seriesId)
+            val key = info.usableKey
+            if (key == null) {
+                _state.value = PlayerState.KeyUnavailable; return
+            }
+            _state.value = PlayerState.Preparing(0f)
+            val file = env.protectedMedia.prepare(ep.id, stream, key) { stage ->
+                if (current?.id == ep.id) _state.value = PlayerState.Preparing(progressOf(stage))
+            }
+            if (current?.id != ep.id) return
+            _state.value = PlayerState.Ready(localUri(file), resume, nonce++)
+            schedulePrefetch(newIndex)
+            return
+        }
+
+        _state.value = PlayerState.Ready(stream.url, resume, nonce++)
+        schedulePrefetch(newIndex)
+    }
+
+    /**
+     * 切换清晰度：用已经拿到的播放模型，不再请求（不消耗播放额度），从当前位置接着播。
+     * 加密分集会下载并解密对应清晰度的那一份（按“分集 + 清晰度”缓存）。
+     */
+    fun setQuality(height: Int) {
+        val ep = current ?: return
+        val info = info ?: return
+        if (height == _quality.value.selectedHeight) return
+        env.preferredHeight = height
+        val resume = lastSaved?.takeIf { it.first == ep.number }?.second ?: 0.0
+        val idx = _index.value
+        resolveJob?.cancel()
+        prefetchJob?.cancel()
+        _state.value = PlayerState.Resolving
+        resolveJob = scope.launch {
+            try {
+                startWith(ep, idx, info, height, resume)
+            } catch (t: Throwable) {
+                if (current?.id != ep.id) return@launch
+                val e = mapError(t) ?: return@launch
+                AppLog.error(e, "quality")
                 _state.value = PlayerState.Failed(e)
             }
         }
@@ -184,7 +225,7 @@ class PlayerController(
                     return@launch
                 }
                 if (!isActive) return@launch
-                val stream = info.preferredStream ?: continue
+                val stream = Quality.pick(info, env.preferredHeight) ?: continue
                 if (!(info.isProtected || stream.isProtected)) continue
                 val key = info.usableKey ?: continue
                 env.protectedMedia.enqueue(listOf(ProtectedMediaStore.DecryptJob(ep.id, stream, key)))

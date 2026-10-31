@@ -34,6 +34,16 @@ public final class PlayerViewModel {
     private var resolveTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
     private var streams: [StreamInfo] = []
+    private var info: PlaybackInfo?
+    /// 可选的清晰度和当前选中的一档，界面据此显示菜单。
+    public private(set) var qualityOptions: [QualityOption] = []
+    public private(set) var selectedHeight = 0
+    private static let heightKey = "preferredHeight"
+    /// 用户选的清晰度（高度，0 表示没选过，用默认规则）。记在本机，下次启动仍然有效。
+    public static var preferredHeight: Int {
+        get { UserDefaults.standard.integer(forKey: heightKey) }
+        set { UserDefaults.standard.set(newValue, forKey: heightKey) }
+    }
     private var streamCursor = 0
     private var lastSaved: (number: Int, seconds: Double, at: Date)?
     private var duration: Double = 0
@@ -82,57 +92,9 @@ public final class PlayerViewModel {
             do {
                 let info = try await repo.playback(for: ep.id)
                 guard !Task.isCancelled, self.current?.id == ep.id else { return }
-                self.streams = info.streams
-                self.streamCursor = 0
-                guard let stream = info.preferredStream else {
-                    self.state = .failed(AppError(.noPlayableStream))
-                    return
-                }
-                if let i = info.streams.firstIndex(where: { $0.url == stream.url }) { self.streamCursor = i }
-                self.duration = Double(info.durationSeconds)
-
-                // 未加密：直接把远端地址交给 AVPlayer。
-                guard info.isProtected || stream.isProtected else {
-                    self.state = .ready(url: stream.url, startAt: resume)
-                    self.schedulePrefetch(after: newIndex)
-                    return
-                }
-
-                // 加密：必须有 16 字节内容密钥才解得开。
-                guard let key = info.usableKey else {
-                    self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
-                    self.state = .keyUnavailable
-                    return
-                }
-                self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
-
-                let store = self.env.protectedMedia
-                let stages = await store.prepare(episodeId: ep.id, stream: stream, key: key)
-                for try await stage in stages {
-                    guard !Task.isCancelled, self.current?.id == ep.id else { return }
-                    switch stage {
-                    case .downloading(let p):
-                        // 下载占前 35%，解密占后 65%，进度条不会来回跳。
-                        self.state = .preparing(progress: min(0.35, p * 0.35))
-                    case .decrypting(let p):
-                        self.state = .preparing(progress: 0.35 + p * 0.65)
-                    case .ready(let url):
-                        self.state = .ready(url: url, startAt: resume)
-                        self.schedulePrefetch(after: newIndex)
-                    }
-                }
+                try await self.startWith(ep: ep, newIndex: newIndex, info: info, preferredHeight: Self.preferredHeight, resume: resume)
             } catch {
-                guard self.current?.id == ep.id else { return }
-                if error is CancellationError { return }
-                let mapped: AppError
-                if let failure = error as? ProtectedMediaStore.Failure {
-                    // 下载/解密失败对用户来说就是「这一集没准备好」，按网络类错误提示并可重试。
-                    mapped = AppError(.transport, debugMessage: failure.localizedDescription)
-                } else {
-                    mapped = AppError.from(error) ?? AppError(.unknown, debugMessage: String(describing: error))
-                }
-                AppLog.error(mapped, context: "playback")
-                self.state = .failed(mapped)
+                self.fail(error, for: ep)
             }
         }
     }
@@ -153,7 +115,7 @@ public final class PlayerViewModel {
                 do {
                     let info = try await env.playback.playback(for: ep.id)
                     if Task.isCancelled { return }
-                    guard let stream = info.preferredStream,
+                    guard let stream = Quality.pick(info, preferredHeight: Self.preferredHeight),
                           info.isProtected || stream.isProtected,
                           let key = info.usableKey else { continue }
                     await env.protectedMedia.enqueue([.init(episodeId: ep.id, stream: stream, key: key)])
@@ -162,6 +124,86 @@ public final class PlayerViewModel {
                     AppLog.net("prefetch resolve \(ep.id) failed: \(error.localizedDescription)")
                     return
                 }
+            }
+        }
+    }
+
+
+    private func fail(_ error: Error, for ep: EpisodeItem) {
+        guard current?.id == ep.id else { return }
+        if error is CancellationError { return }
+        let mapped: AppError
+        if let failure = error as? ProtectedMediaStore.Failure {
+            // 下载/解密失败对用户来说就是「这一集没准备好」，按网络类错误提示并可重试。
+            mapped = AppError(.transport, debugMessage: failure.localizedDescription)
+        } else {
+            mapped = AppError.from(error) ?? AppError(.unknown, debugMessage: String(describing: error))
+        }
+        AppLog.error(mapped, context: "playback")
+        state = .failed(mapped)
+    }
+
+    /// 拿到播放模型之后：按清晰度选流，未加密直接播，加密的下载 + 解密到本地再播。
+    private func startWith(ep: EpisodeItem, newIndex: Int, info: PlaybackInfo, preferredHeight: Int, resume: Double) async throws {
+        self.streams = info.streams
+        self.streamCursor = 0
+        self.info = info
+        guard let stream = Quality.pick(info, preferredHeight: preferredHeight) else {
+            self.state = .failed(AppError(.noPlayableStream))
+            return
+        }
+        if let i = info.streams.firstIndex(where: { $0.url == stream.url }) { self.streamCursor = i }
+        self.qualityOptions = Quality.options(info.streams)
+        self.selectedHeight = stream.height
+        self.duration = Double(info.durationSeconds)
+
+        // 未加密：直接把远端地址交给 AVPlayer。
+        guard info.isProtected || stream.isProtected else {
+            self.state = .ready(url: stream.url, startAt: resume)
+            self.schedulePrefetch(after: newIndex)
+            return
+        }
+
+        // 加密：必须有 16 字节内容密钥才解得开。
+        guard let key = info.usableKey else {
+            self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
+            self.state = .keyUnavailable
+            return
+        }
+        self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
+
+        let store = self.env.protectedMedia
+        let stages = await store.prepare(episodeId: ep.id, stream: stream, key: key)
+        for try await stage in stages {
+            guard !Task.isCancelled, self.current?.id == ep.id else { return }
+            switch stage {
+            case .downloading(let p):
+                // 下载占前 35%，解密占后 65%，进度条不会来回跳。
+                self.state = .preparing(progress: min(0.35, p * 0.35))
+            case .decrypting(let p):
+                self.state = .preparing(progress: 0.35 + p * 0.65)
+            case .ready(let url):
+                self.state = .ready(url: url, startAt: resume)
+                self.schedulePrefetch(after: newIndex)
+            }
+        }
+    }
+
+    /// 切换清晰度：用已经拿到的播放模型，不再请求（不消耗播放额度），从当前位置接着播。
+    /// 加密分集会下载并解密对应清晰度的那一份（按“分集 + 清晰度”缓存）。
+    public func setQuality(_ height: Int) {
+        guard let ep = current, let info, height != selectedHeight else { return }
+        Self.preferredHeight = height
+        let resume = (lastSaved?.number == ep.number ? lastSaved?.seconds : nil) ?? 0
+        let idx = index
+        resolveTask?.cancel()
+        prefetchTask?.cancel()
+        state = .resolving
+        resolveTask = Task {
+            do {
+                try await self.startWith(ep: ep, newIndex: idx, info: info, preferredHeight: height, resume: resume)
+            } catch {
+                self.fail(error, for: ep)
             }
         }
     }

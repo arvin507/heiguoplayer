@@ -125,3 +125,32 @@ final class SuggestionKeywordTests: XCTestCase {
         XCTAssertEqual(LiveHongguoService.suggestionKeyword(text: "2024", keyword: "2024"), "2024")
     }
 }
+
+
+final class QualityTests: XCTestCase {
+    private func stream(_ h: Int, _ br: Int = 1000, def: String = "") -> StreamInfo {
+        StreamInfo(url: URL(string: "https://x/\(h)/\(br)")!, definition: def, height: h, bitrate: br)
+    }
+    private var info: PlaybackInfo {
+        PlaybackInfo(episodeId: "e", isProtected: false,
+                     streams: [stream(1080, 3000), stream(720, 2000), stream(720, 1500), stream(480, 800)])
+    }
+
+    func testOptionsAreDedupedByHeightAndSortedDescending() {
+        XCTAssertEqual(Quality.options(info.streams).map(\.height), [1080, 720, 480])
+    }
+
+    func testNoPreferenceUsesDefaultRule() { XCTAssertEqual(Quality.pick(info, preferredHeight: 0)?.height, 1080) }
+    func testExactHeightWins() { XCTAssertEqual(Quality.pick(info, preferredHeight: 720)?.height, 720) }
+    func testMissingHeightFallsBackToHighestNotAbove() { XCTAssertEqual(Quality.pick(info, preferredHeight: 900)?.height, 720) }
+    func testPreferenceBelowAllPicksLowest() { XCTAssertEqual(Quality.pick(info, preferredHeight: 360)?.height, 480) }
+
+    func testLabelPrefersDefinitionThenHeight() {
+        XCTAssertEqual(Quality.label(stream(1080, def: "超清")), "超清")
+        XCTAssertEqual(Quality.label(stream(720)), "720p")
+    }
+
+    func testEmptyStreamsPickNothing() {
+        XCTAssertNil(Quality.pick(PlaybackInfo(episodeId: "e", isProtected: false, streams: []), preferredHeight: 720))
+    }
+}
