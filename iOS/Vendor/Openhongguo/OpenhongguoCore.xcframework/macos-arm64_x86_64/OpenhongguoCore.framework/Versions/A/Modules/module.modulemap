@@ -1,0 +1,8 @@
+framework module "OpenhongguoCore" {
+	header "ref.h"
+    header "Core.objc.h"
+    header "Universe.objc.h"
+    header "OpenhongguoCore.h"
+
+    export *
+}

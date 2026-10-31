@@ -1,0 +1,191 @@
+import Foundation
+
+/// 播放一部剧：选集、请求播放模型（仅在真正要播时）、断点续播、自动连播、加密分集解密。
+/// 不持有 AVPlayer：界面拿 `state` 里的 URL 自己播放，再把进度和结束事件回传，方便测试。
+@MainActor
+@Observable
+public final class PlayerViewModel {
+    public enum State: Equatable {
+        case idle
+        case resolving
+        /// 可以播放：地址、起播秒数。加密分集给的是解密后的本地文件地址。
+        case ready(url: URL, startAt: Double)
+        /// 正在下载 / 解密加密分集，progress 是 0...1。
+        case preparing(progress: Double)
+        /// 加密分集，但服务端没有下发可用的内容密钥。
+        case keyUnavailable
+        /// 服务端禁止播放该集。
+        case unplayable
+        case failed(AppError)
+    }
+
+    public let seriesId: String
+    public private(set) var seriesTitle: String
+    public private(set) var coverURL: URL?
+    public private(set) var episodes: [EpisodeItem]
+    public private(set) var index: Int
+    public private(set) var state: State = .idle
+    public var autoplayNext = true
+
+    private let env: AppEnvironment
+    private var pendingStart: Double
+    private var resolveTask: Task<Void, Never>?
+    private var streams: [StreamInfo] = []
+    private var streamCursor = 0
+    private var lastSaved: (number: Int, seconds: Double, at: Date)?
+    private var duration: Double = 0
+    /// 每隔多少秒写一次进度。
+    static let saveInterval: TimeInterval = 5
+
+    public init(seriesId: String, seriesTitle: String, coverURL: URL?, episodes: [EpisodeItem],
+                startIndex: Int, startAt: Double, env: AppEnvironment) {
+        self.seriesId = seriesId
+        self.seriesTitle = seriesTitle
+        self.coverURL = coverURL
+        self.episodes = episodes
+        self.index = min(max(0, startIndex), max(0, episodes.count - 1))
+        self.pendingStart = startAt
+        self.env = env
+    }
+
+    public var current: EpisodeItem? { episodes.indices.contains(index) ? episodes[index] : nil }
+    public var hasNext: Bool { index + 1 < episodes.count }
+    public var hasPrevious: Bool { index > 0 }
+
+    /// 开始播放当前集。重复调用不会重复请求（仓库层缓存 + 合并）。
+    public func start() {
+        play(at: index, startAt: pendingStart)
+    }
+
+    public func play(at newIndex: Int, startAt: Double? = nil) {
+        guard episodes.indices.contains(newIndex) else { return }
+        flushProgress()
+        resolveTask?.cancel()
+        index = newIndex
+        duration = 0
+        let ep = episodes[newIndex]
+        // startAt 为 nil 或负数：用本机记录的进度续播
+        let resume = startAt.flatMap { $0 >= 0 ? $0 : nil } ?? resumeSeconds(for: ep)
+        pendingStart = 0
+
+        if !ep.playable { state = .unplayable; return }
+
+        state = .resolving
+        let repo = env.playback
+        resolveTask = Task {
+            do {
+                let info = try await repo.playback(for: ep.id)
+                guard !Task.isCancelled, self.current?.id == ep.id else { return }
+                self.streams = info.streams
+                self.streamCursor = 0
+                guard let stream = info.preferredStream else {
+                    self.state = .failed(AppError(.noPlayableStream))
+                    return
+                }
+                if let i = info.streams.firstIndex(where: { $0.url == stream.url }) { self.streamCursor = i }
+                self.duration = Double(info.durationSeconds)
+
+                // 未加密：直接把远端地址交给 AVPlayer。
+                guard info.isProtected || stream.isProtected else {
+                    self.state = .ready(url: stream.url, startAt: resume)
+                    return
+                }
+
+                // 加密：必须有 16 字节内容密钥才解得开。
+                guard let key = info.usableKey else {
+                    self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
+                    self.state = .keyUnavailable
+                    return
+                }
+                self.env.library.markEncrypted(ep.id, seriesId: self.seriesId)
+
+                let store = self.env.protectedMedia
+                let stages = await store.prepare(episodeId: ep.id, stream: stream, key: key)
+                for try await stage in stages {
+                    guard !Task.isCancelled, self.current?.id == ep.id else { return }
+                    switch stage {
+                    case .downloading(let p):
+                        // 下载占前 35%，解密占后 65%，进度条不会来回跳。
+                        self.state = .preparing(progress: min(0.35, p * 0.35))
+                    case .decrypting(let p):
+                        self.state = .preparing(progress: 0.35 + p * 0.65)
+                    case .ready(let url):
+                        self.state = .ready(url: url, startAt: resume)
+                    }
+                }
+            } catch {
+                guard self.current?.id == ep.id else { return }
+                if error is CancellationError { return }
+                let mapped: AppError
+                if let failure = error as? ProtectedMediaStore.Failure {
+                    // 下载/解密失败对用户来说就是「这一集没准备好」，按网络类错误提示并可重试。
+                    mapped = AppError(.transport, debugMessage: failure.localizedDescription)
+                } else {
+                    mapped = AppError.from(error) ?? AppError(.unknown, debugMessage: String(describing: error))
+                }
+                AppLog.error(mapped, context: "playback")
+                self.state = .failed(mapped)
+            }
+        }
+    }
+
+    public func retry() { play(at: index) }
+    public func next() { if hasNext { play(at: index + 1, startAt: 0) } }
+    public func previous() { if hasPrevious { play(at: index - 1) } }
+
+    /// AVPlayer 播放当前地址失败时调用：依次换备用地址、其他清晰度；都失败才报错。不会重新请求播放模型。
+    /// 解密后的本地文件没有备用地址，直接报错。
+    public func playerFailed(_ message: String, at seconds: Double) {
+        guard case .ready(let url, _) = state else { return }
+        if url.isFileURL {
+            state = .failed(AppError(.noPlayableStream, debugMessage: message))
+            return
+        }
+        let candidates = streams.flatMap { [$0.url, $0.backupURL].compactMap { $0 } }
+        if let i = candidates.firstIndex(of: url), i + 1 < candidates.count {
+            state = .ready(url: candidates[i + 1], startAt: seconds)
+        } else {
+            state = .failed(AppError(.noPlayableStream, debugMessage: message))
+        }
+    }
+
+    /// 播放进度回调（界面每秒左右调用一次）。
+    public func progress(seconds: Double, duration: Double) {
+        guard let ep = current, seconds.isFinite else { return }
+        if duration.isFinite, duration > 0 { self.duration = duration }
+        let now = Date()
+        if let l = lastSaved, l.number == ep.number, now.timeIntervalSince(l.at) < Self.saveInterval { 
+            lastSaved = (ep.number, seconds, l.at)
+            return
+        }
+        save(ep, seconds)
+    }
+
+    /// 当前集播完。
+    public func didFinish() {
+        if let ep = current { save(ep, max(duration, 1)) }
+        if autoplayNext, hasNext { play(at: index + 1, startAt: 0) }
+    }
+
+    /// 离开页面：取消未完成的请求，写入最后进度。
+    public func stop(at seconds: Double? = nil) {
+        resolveTask?.cancel()
+        if let seconds, let ep = current, case .ready = state { save(ep, seconds) } else { flushProgress() }
+    }
+
+    private func flushProgress() {
+        guard let l = lastSaved, let ep = current, l.number == ep.number else { return }
+        save(ep, l.seconds)
+    }
+
+    private func save(_ ep: EpisodeItem, _ seconds: Double) {
+        lastSaved = (ep.number, seconds, Date())
+        env.library.saveProgress(seriesId: seriesId, seriesTitle: seriesTitle, coverURL: coverURL,
+                                 episode: ep, seconds: seconds, duration: duration)
+    }
+
+    private func resumeSeconds(for ep: EpisodeItem) -> Double {
+        guard let r = env.library.record(seriesId, number: ep.number), !r.isFinished else { return 0 }
+        return max(0, r.progressSeconds - 2) // 往回退 2 秒，接上剧情
+    }
+}
